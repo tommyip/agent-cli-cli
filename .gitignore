@@ -1,0 +1,17 @@
+/target/
+*.rs.bk
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local environment/config
+.env
+.env.*
+
+
+
+# Added by cargo
+
+/target
