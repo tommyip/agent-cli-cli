@@ -3,7 +3,8 @@ use std::{
     collections::{HashMap, VecDeque},
     error::Error,
     fs,
-    io::{self, IsTerminal, Stdout},
+    fs::File,
+    io::{self, BufRead, BufReader, IsTerminal, Stdout},
     path::{Path, PathBuf},
     process::Command,
     sync::mpsc::{self, Receiver},
@@ -260,14 +261,7 @@ impl App {
                 break;
             };
             if let Some(session) = self.sessions.get_mut(index) {
-                session.message_search = limited_search_text(
-                    turns
-                        .iter()
-                        .map(|turn| turn.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    MESSAGE_SEARCH_LIMIT,
-                );
+                session.message_search = message_search_text(&turns);
                 session.message_turns = turns;
                 self.indexed_messages += 1;
                 changed = true;
@@ -662,6 +656,9 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .saturating_sub(fixed_width)
         .saturating_sub(title_width)
         .max(16);
+    let title_query = app.title_query.trim();
+    let location_query = app.location_query.trim();
+    let now = Utc::now().timestamp();
 
     let rows = app.rows.iter().enumerate().map(|(visible, row)| {
         let session = &app.sessions[row.index];
@@ -679,16 +676,17 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Cell::from(session.provider.as_str()).style(session.provider.style()),
             Cell::from(highlight_title_cell(
                 &session.title,
-                app.title_query.trim(),
+                title_query,
                 title_width as usize,
             )),
             Cell::from(highlight_location_cell(
                 &session.cwd_display,
-                app.location_query.trim(),
+                location_query,
                 location_width as usize,
             )),
             Cell::from(format_tokens(session.tokens)).style(token_style(session.tokens)),
-            Cell::from(format_age(session.updated_at)).style(Style::default().fg(Color::Gray)),
+            Cell::from(format_age_at(session.updated_at, now))
+                .style(Style::default().fg(Color::Gray)),
         ])
     });
 
@@ -1143,6 +1141,21 @@ fn spawn_message_indexer(sessions: &[Session]) -> Receiver<(usize, Vec<ChatTurn>
     rx
 }
 
+fn message_search_text(turns: &[ChatTurn]) -> String {
+    let mut text = String::new();
+    for turn in turns {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&turn.text);
+        if text.len() >= MESSAGE_SEARCH_LIMIT {
+            text.truncate(MESSAGE_SEARCH_LIMIT);
+            break;
+        }
+    }
+    text
+}
+
 fn load_codex_sessions() -> Vec<Session> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
@@ -1359,14 +1372,14 @@ struct ClaudeHead {
 }
 
 fn parse_claude_head(path: &Path) -> ClaudeHead {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(file) = File::open(path) else {
         return ClaudeHead::default();
     };
     let mut head = ClaudeHead::default();
     let mut tokens = 0;
 
-    for line in text.lines().take(200) {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
+    for line in BufReader::new(file).lines().take(200).map_while(Result::ok) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
 
@@ -1405,14 +1418,14 @@ fn parse_claude_head(path: &Path) -> ClaudeHead {
 }
 
 fn extract_transcript_turns(path: &Path) -> Vec<ChatTurn> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(file) = File::open(path) else {
         return Vec::new();
     };
 
     let mut turns = VecDeque::new();
     let mut total_len = 0usize;
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         if should_skip_transcript_line(&value) {
@@ -1652,8 +1665,8 @@ fn format_datetime(timestamp: i64) -> String {
     }
 }
 
-fn format_age(timestamp: i64) -> String {
-    let age = Utc::now().timestamp().saturating_sub(timestamp).max(0);
+fn format_age_at(timestamp: i64, now: i64) -> String {
+    let age = now.saturating_sub(timestamp).max(0);
     if age < 60 {
         "now".to_owned()
     } else if age < 60 * 60 {
