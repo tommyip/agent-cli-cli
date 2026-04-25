@@ -1586,24 +1586,27 @@ fn sum_token_fields(value: &Value) -> u64 {
 }
 
 fn launch_session(session: &Session) -> Result<(), Box<dyn Error>> {
-    let mut command = match session.provider {
-        SessionProvider::Claude => {
-            let mut command = Command::new("claude");
-            command.arg("--resume").arg(&session.id);
-            command
-        }
-        SessionProvider::Codex => {
-            let mut command = Command::new("codex");
-            command.arg("resume").arg(&session.id);
-            command
-        }
-    };
-
+    let mut command = shell_command(resume_command(session));
     let status = command.current_dir(&session.cwd).status()?;
     if !status.success() {
         eprintln!("Session command exited with status: {status}");
     }
     Ok(())
+}
+
+fn resume_command(session: &Session) -> String {
+    let quoted_id = shell_words::quote(&session.id);
+    match session.provider {
+        SessionProvider::Claude => format!("claude --resume {quoted_id}"),
+        SessionProvider::Codex => format!("codex resume {quoted_id}"),
+    }
+}
+
+fn shell_command(command: String) -> Command {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+    let mut process = Command::new(shell);
+    process.arg("-ic").arg(command);
+    process
 }
 
 fn compact_title(title: &str, fallback: &str) -> String {

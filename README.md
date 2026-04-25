@@ -46,18 +46,18 @@ Search is fuzzy. Title search matches titles, summaries, first prompts, first us
 
 ## Launching
 
-When you launch a session, `acc` changes to that session's recorded working directory before running the underlying CLI.
+When you launch a session, `acc` changes to that session's recorded working directory before running the underlying CLI through your interactive shell. This lets ordinary `fish`, `zsh`, and `bash` aliases or functions for `claude` and `codex` apply.
 
 For Codex:
 
 ```sh
-cd <session-cwd> && codex resume <session-id>
+cd <session-cwd> && $SHELL -ic 'codex resume <session-id>'
 ```
 
 For Claude Code:
 
 ```sh
-cd <session-cwd> && claude --resume <session-id>
+cd <session-cwd> && $SHELL -ic 'claude --resume <session-id>'
 ```
 
 If the recorded directory no longer exists, `acc` shows an error instead of launching.

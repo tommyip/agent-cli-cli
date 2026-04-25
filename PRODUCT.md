@@ -209,18 +209,18 @@ Pressing `enter` launches the selected session.
 
 Pressing a visible row shortcut launches that row directly.
 
-The tool must change to the session's recorded working directory before launching the underlying agent CLI.
+The tool must change to the session's recorded working directory before launching the underlying agent CLI through the user's interactive shell. Normal `fish`, `zsh`, and `bash` aliases or functions for `claude` and `codex` should be honored.
 
 For Codex sessions:
 
 ```sh
-cd <cwd> && codex resume <session-id>
+cd <cwd> && $SHELL -ic 'codex resume <session-id>'
 ```
 
 For Claude Code sessions:
 
 ```sh
-cd <cwd> && claude --resume <session-id>
+cd <cwd> && $SHELL -ic 'claude --resume <session-id>'
 ```
 
 The session ID is the canonical launch target because it is unambiguous.
