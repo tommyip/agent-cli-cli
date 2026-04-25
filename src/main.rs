@@ -576,31 +576,28 @@ fn render(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn render_inputs(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let focused = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let normal = Style::default().fg(Color::Gray);
-
+    let focused = label_style().add_modifier(Modifier::UNDERLINED);
     let provider_style = if app.focus == Focus::Provider {
         focused
     } else {
-        normal
+        label_style()
     };
     let title_style = if app.focus == Focus::Title {
         focused
     } else {
-        normal
+        label_style()
     };
     let location_style = if app.focus == Focus::Location {
         focused
     } else {
-        normal
+        label_style()
     };
     let message_style = if app.focus == Focus::Messages {
         focused
     } else {
-        normal
+        label_style()
     };
+    let input_value_style = Style::default().fg(Color::Gray);
 
     let lines = vec![
         Line::from(vec![
@@ -615,7 +612,11 @@ fn render_inputs(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 } else {
                     &app.title_query
                 },
-                title_style,
+                if app.focus == Focus::Title {
+                    title_style
+                } else {
+                    input_value_style
+                },
             ),
         ]),
         Line::from(vec![
@@ -626,7 +627,11 @@ fn render_inputs(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 } else {
                     &app.location_query
                 },
-                location_style,
+                if app.focus == Focus::Location {
+                    location_style
+                } else {
+                    input_value_style
+                },
             ),
         ]),
         Line::from(vec![
@@ -637,7 +642,11 @@ fn render_inputs(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 } else {
                     &app.message_query
                 },
-                message_style,
+                if app.focus == Focus::Messages {
+                    message_style
+                } else {
+                    input_value_style
+                },
             ),
         ]),
     ];
@@ -705,11 +714,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Row::new(vec![
             "key", "agent", "title", "location", "tokens", "updated",
         ])
-        .style(
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
+        .style(label_style()),
     )
     .row_highlight_style(
         Style::default()
@@ -835,12 +840,7 @@ fn render_error(frame: &mut Frame<'_>, message: &str) {
 
 fn metadata_line(label: &'static str, value: &str, value_style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("{label}: "),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!("{label}: "), label_style()),
         Span::styled(value.to_owned(), value_style),
     ])
 }
@@ -855,14 +855,13 @@ fn metadata_line_highlighted(
         return metadata_line(label, value, value_style);
     }
 
-    let mut spans = vec![Span::styled(
-        format!("{label}: "),
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )];
+    let mut spans = vec![Span::styled(format!("{label}: "), label_style())];
     spans.extend(highlight_preview_query_spans(value, query, value_style));
     Line::from(spans)
+}
+
+fn label_style() -> Style {
+    Style::default().add_modifier(Modifier::BOLD)
 }
 
 fn section_line(label: &'static str) -> Line<'static> {
