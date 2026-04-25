@@ -66,6 +66,8 @@ If the recorded directory no longer exists, `acc` shows an error instead of laun
 
 `acc` reads Claude Code and Codex session files from `~/.claude` and `~/.codex`. These files are treated as read-only.
 
+Codex sessions mirror `codex resume --all`: active CLI or VS Code threads with a recorded first user message. Claude Code subagent, sidechain, and generated command sessions are hidden when they can be identified from local metadata.
+
 ## Requirements
 
 `acc` supports Linux and macOS. To launch sessions, `claude` and/or `codex` must be available on `PATH`. `fzf` is not required.

@@ -1,8 +1,7 @@
 use std::{
     cmp::Reverse,
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     error::Error,
-    fs,
     fs::File,
     io::{self, BufRead, BufReader, IsTerminal, Stdout},
     path::{Path, PathBuf},
@@ -26,11 +25,12 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
-use rusqlite::Connection;
 use serde_json::Value;
-use walkdir::WalkDir;
 
-const TITLE_SEARCH_LIMIT: usize = 1_000;
+mod claude;
+mod codex;
+
+pub(crate) const TITLE_SEARCH_LIMIT: usize = 1_000;
 const MESSAGE_SEARCH_LIMIT: usize = 20_000;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -122,7 +122,7 @@ impl Provider {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionProvider {
+pub(crate) enum SessionProvider {
     Claude,
     Codex,
 }
@@ -172,19 +172,19 @@ impl Focus {
 }
 
 #[derive(Debug)]
-struct Session {
-    id: String,
-    provider: SessionProvider,
-    cwd: PathBuf,
-    cwd_display: String,
-    title: String,
-    title_search: String,
-    message_search: String,
-    message_turns: Vec<ChatTurn>,
-    transcript_path: Option<PathBuf>,
-    created_at: Option<i64>,
-    updated_at: i64,
-    tokens: Option<u64>,
+pub(crate) struct Session {
+    pub(crate) id: String,
+    pub(crate) provider: SessionProvider,
+    pub(crate) cwd: PathBuf,
+    pub(crate) cwd_display: String,
+    pub(crate) title: String,
+    pub(crate) title_search: String,
+    pub(crate) message_search: String,
+    pub(crate) message_turns: Vec<ChatTurn>,
+    pub(crate) transcript_path: Option<PathBuf>,
+    pub(crate) created_at: Option<i64>,
+    pub(crate) updated_at: i64,
+    pub(crate) tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -196,7 +196,7 @@ struct MatchRow {
 }
 
 #[derive(Debug, Clone)]
-struct ChatTurn {
+pub(crate) struct ChatTurn {
     role: ChatRole,
     text: String,
 }
@@ -1111,8 +1111,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 fn load_sessions() -> Vec<Session> {
     let mut sessions = Vec::new();
-    sessions.extend(load_codex_sessions());
-    sessions.extend(load_claude_sessions());
+    sessions.extend(codex::load_sessions());
+    sessions.extend(claude::load_sessions());
     sessions
 }
 
@@ -1154,267 +1154,6 @@ fn message_search_text(turns: &[ChatTurn]) -> String {
         }
     }
     text
-}
-
-fn load_codex_sessions() -> Vec<Session> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let db_path = home.join(".codex/state_5.sqlite");
-    if !db_path.exists() {
-        return Vec::new();
-    }
-
-    let Ok(conn) = Connection::open(db_path) else {
-        return Vec::new();
-    };
-    let Ok(mut stmt) = conn.prepare(
-        "select id, title, cwd, rollout_path, created_at, updated_at, tokens_used, first_user_message
-         from threads
-         where archived = 0
-         order by updated_at desc",
-    ) else {
-        return Vec::new();
-    };
-
-    let Ok(rows) = stmt.query_map([], |row| {
-        let id: String = row.get(0)?;
-        let title: String = row.get(1)?;
-        let cwd: String = row.get(2)?;
-        let rollout_path: String = row.get(3)?;
-        let created_at: Option<i64> = row.get(4)?;
-        let updated_at: i64 = row.get(5)?;
-        let tokens: Option<i64> = row.get(6)?;
-        let first_user_message: String = row.get(7).unwrap_or_default();
-        Ok((
-            id,
-            title,
-            cwd,
-            rollout_path,
-            created_at,
-            updated_at,
-            tokens.and_then(|value| u64::try_from(value).ok()),
-            first_user_message,
-        ))
-    }) else {
-        return Vec::new();
-    };
-
-    let mut sessions = Vec::new();
-    for row in rows.flatten() {
-        let (id, title, cwd, rollout_path, created_at, updated_at, tokens, first_user_message) =
-            row;
-        let cwd = PathBuf::from(cwd);
-        let title = compact_title(&title, &first_user_message);
-        let title_search =
-            limited_search_text(format!("{title}\n{first_user_message}"), TITLE_SEARCH_LIMIT);
-        let transcript_path = PathBuf::from(rollout_path);
-        sessions.push(Session {
-            id,
-            provider: SessionProvider::Codex,
-            cwd: cwd.clone(),
-            cwd_display: display_path(&cwd),
-            title,
-            title_search,
-            message_search: String::new(),
-            message_turns: Vec::new(),
-            transcript_path: Some(transcript_path),
-            created_at,
-            updated_at,
-            tokens,
-        });
-    }
-    sessions
-}
-
-fn load_claude_sessions() -> Vec<Session> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let projects_dir = home.join(".claude/projects");
-    if !projects_dir.exists() {
-        return Vec::new();
-    }
-
-    let index = load_claude_indexes(&projects_dir);
-    let mut sessions = Vec::new();
-
-    for entry in WalkDir::new(projects_dir)
-        .max_depth(2)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
-    {
-        let path = entry.path().to_path_buf();
-        let Some(id) = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map(str::to_owned)
-        else {
-            continue;
-        };
-
-        let meta = index.get(&id).cloned().unwrap_or_default();
-        let parsed = parse_claude_head(&path);
-        let file_updated_at = file_modified_unix(&path);
-        let cwd = meta
-            .project_path
-            .or(parsed.cwd)
-            .unwrap_or_else(|| path.parent().unwrap_or(Path::new("")).to_path_buf());
-        let updated_at = meta
-            .modified
-            .or(file_updated_at)
-            .or(parsed.updated_at)
-            .unwrap_or_default();
-        let created_at = meta.created.or(parsed.created_at);
-        let raw_title = meta
-            .summary
-            .or(parsed.slug)
-            .or(meta.first_prompt.clone())
-            .or(parsed.first_prompt.clone())
-            .unwrap_or_else(|| id.clone());
-        let first_prompt = meta
-            .first_prompt
-            .or(parsed.first_prompt)
-            .unwrap_or_default();
-        let title = compact_title(&raw_title, &first_prompt);
-        let title_search =
-            limited_search_text(format!("{title}\n{first_prompt}"), TITLE_SEARCH_LIMIT);
-
-        sessions.push(Session {
-            id,
-            provider: SessionProvider::Claude,
-            cwd: cwd.clone(),
-            cwd_display: display_path(&cwd),
-            title,
-            title_search,
-            message_search: String::new(),
-            message_turns: Vec::new(),
-            transcript_path: Some(path),
-            created_at,
-            updated_at,
-            tokens: parsed.tokens,
-        });
-    }
-
-    sessions
-}
-
-#[derive(Clone, Default)]
-struct ClaudeIndexEntry {
-    summary: Option<String>,
-    first_prompt: Option<String>,
-    project_path: Option<PathBuf>,
-    created: Option<i64>,
-    modified: Option<i64>,
-}
-
-fn load_claude_indexes(projects_dir: &Path) -> HashMap<String, ClaudeIndexEntry> {
-    let mut index = HashMap::new();
-    for entry in WalkDir::new(projects_dir)
-        .max_depth(2)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name() == "sessions-index.json")
-    {
-        let Ok(text) = fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        let Some(entries) = value.get("entries").and_then(Value::as_array) else {
-            continue;
-        };
-        for item in entries {
-            let Some(id) = item.get("sessionId").and_then(Value::as_str) else {
-                continue;
-            };
-            index.insert(
-                id.to_owned(),
-                ClaudeIndexEntry {
-                    summary: item
-                        .get("summary")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    first_prompt: item
-                        .get("firstPrompt")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    project_path: item
-                        .get("projectPath")
-                        .and_then(Value::as_str)
-                        .map(PathBuf::from),
-                    created: item
-                        .get("created")
-                        .and_then(Value::as_str)
-                        .and_then(parse_timestamp),
-                    modified: item
-                        .get("modified")
-                        .and_then(Value::as_str)
-                        .and_then(parse_timestamp),
-                },
-            );
-        }
-    }
-    index
-}
-
-#[derive(Default)]
-struct ClaudeHead {
-    cwd: Option<PathBuf>,
-    first_prompt: Option<String>,
-    slug: Option<String>,
-    created_at: Option<i64>,
-    updated_at: Option<i64>,
-    tokens: Option<u64>,
-}
-
-fn parse_claude_head(path: &Path) -> ClaudeHead {
-    let Ok(file) = File::open(path) else {
-        return ClaudeHead::default();
-    };
-    let mut head = ClaudeHead::default();
-    let mut tokens = 0;
-
-    for line in BufReader::new(file).lines().take(200).map_while(Result::ok) {
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-
-        if head.cwd.is_none() {
-            head.cwd = value.get("cwd").and_then(Value::as_str).map(PathBuf::from);
-        }
-        if head.slug.is_none() {
-            head.slug = value.get("slug").and_then(Value::as_str).map(str::to_owned);
-        }
-        if let Some(ts) = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(parse_timestamp)
-        {
-            head.created_at.get_or_insert(ts);
-            head.updated_at = Some(ts);
-        }
-        tokens += sum_token_fields(&value);
-
-        if head.first_prompt.is_none()
-            && value.get("type").and_then(Value::as_str) == Some("user")
-            && !value
-                .get("isMeta")
-                .and_then(Value::as_bool)
-                .unwrap_or_default()
-        {
-            head.first_prompt =
-                extract_message_content(&value).map(|text| text.chars().take(500).collect());
-        }
-    }
-
-    if tokens > 0 {
-        head.tokens = Some(tokens);
-    }
-    head
 }
 
 fn extract_transcript_turns(path: &Path) -> Vec<ChatTurn> {
@@ -1524,67 +1263,6 @@ fn should_skip_transcript_line(value: &Value) -> bool {
     false
 }
 
-fn extract_message_content(value: &Value) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(message) = value.get("message") {
-        collect_text_fields(message, &mut parts);
-    } else {
-        collect_text_fields(value, &mut parts);
-    }
-    let text = parts.join("\n");
-    (!text.trim().is_empty()).then_some(text)
-}
-
-fn collect_text_fields(value: &Value, out: &mut Vec<String>) {
-    match value {
-        Value::String(text) => {
-            out.push(text.clone());
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_text_fields(item, out);
-            }
-        }
-        Value::Object(map) => {
-            for (key, value) in map {
-                if matches!(
-                    key.as_str(),
-                    "base_instructions" | "environment_context" | "turn_context"
-                ) {
-                    continue;
-                }
-                if matches!(
-                    key.as_str(),
-                    "text" | "content" | "message" | "input_text" | "output_text"
-                ) {
-                    collect_text_fields(value, out);
-                } else if value.is_object() || value.is_array() {
-                    collect_text_fields(value, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn sum_token_fields(value: &Value) -> u64 {
-    match value {
-        Value::Object(map) => map
-            .iter()
-            .map(|(key, value)| {
-                let here = if key.contains("tokens") {
-                    value.as_u64().unwrap_or_default()
-                } else {
-                    0
-                };
-                here + sum_token_fields(value)
-            })
-            .sum(),
-        Value::Array(items) => items.iter().map(sum_token_fields).sum(),
-        _ => 0,
-    }
-}
-
 fn launch_session(session: &Session) -> Result<(), Box<dyn Error>> {
     let mut command = shell_command(resume_command(session));
     let status = command.current_dir(&session.cwd).status()?;
@@ -1609,7 +1287,7 @@ fn shell_command(command: String) -> Command {
     process
 }
 
-fn compact_title(title: &str, fallback: &str) -> String {
+pub(crate) fn compact_title(title: &str, fallback: &str) -> String {
     let source = if is_low_information_title(title) {
         fallback
     } else {
@@ -1630,14 +1308,14 @@ fn is_low_information_title(title: &str) -> bool {
     title.is_empty() || title == "."
 }
 
-fn limited_search_text(text: String, limit: usize) -> String {
+pub(crate) fn limited_search_text(text: String, limit: usize) -> String {
     if text.len() <= limit {
         return text;
     }
     text.chars().take(limit).collect()
 }
 
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     if let Some(home) = dirs::home_dir() {
         if let Ok(stripped) = path.strip_prefix(&home) {
             if stripped.as_os_str().is_empty() {
@@ -1649,13 +1327,7 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
-fn file_modified_unix(path: &Path) -> Option<i64> {
-    let modified = fs::metadata(path).ok()?.modified().ok()?;
-    let datetime: DateTime<Utc> = modified.into();
-    Some(datetime.timestamp())
-}
-
-fn parse_timestamp(timestamp: &str) -> Option<i64> {
+pub(crate) fn parse_timestamp(timestamp: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(timestamp)
         .map(|dt| dt.timestamp())
         .ok()

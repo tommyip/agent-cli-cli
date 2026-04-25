@@ -246,7 +246,7 @@ By default, include user-facing resumable sessions from:
 
 The tool should avoid showing obvious internal/meta-only records when they can be detected reliably.
 
-Subagent or sidechain sessions may be shown if they contain direct user-facing context and are launchable, but the default list should prioritize sessions a user would reasonably want to resume.
+Codex sessions should mirror `codex resume --all`: active CLI or VS Code threads with a recorded first user message. Claude Code subagent, sidechain, and generated command sessions should be hidden when local metadata identifies them. The default list should prioritize top-level interactive sessions a user would reasonably want to resume.
 
 ## Local Data Sources
 
