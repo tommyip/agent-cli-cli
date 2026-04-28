@@ -84,11 +84,7 @@ pub(crate) fn load_sessions() -> Vec<Session> {
             continue;
         };
         let first_prompt = first_prompt.unwrap_or_default();
-        if is_hidden_thread(
-            &raw_title,
-            &first_prompt,
-            is_command_only || parsed.started_with_command,
-        ) {
+        if is_hidden_thread(&raw_title, &first_prompt, is_command_only) {
             continue;
         }
         let title = compact_title(&raw_title, &first_prompt);
@@ -214,7 +210,6 @@ struct Head {
     cwd: Option<PathBuf>,
     first_prompt: Option<String>,
     command_fallback: Option<String>,
-    started_with_command: bool,
     slug: Option<String>,
     custom_title: Option<String>,
     ai_title: Option<String>,
@@ -258,10 +253,10 @@ fn parse_session_file(path: &Path) -> Head {
             .get("isSidechain")
             .and_then(Value::as_bool)
             .unwrap_or_default();
-        fill_string_once(&mut head.custom_title, &value, "customTitle");
-        fill_string_once(&mut head.ai_title, &value, "aiTitle");
-        fill_string_once(&mut head.last_prompt, &value, "lastPrompt");
-        fill_string_once(&mut head.summary, &value, "summary");
+        fill_string_latest(&mut head.custom_title, &value, "customTitle");
+        fill_string_latest(&mut head.ai_title, &value, "aiTitle");
+        fill_string_latest(&mut head.last_prompt, &value, "lastPrompt");
+        fill_string_latest(&mut head.summary, &value, "summary");
         if let Some(ts) = value
             .get("timestamp")
             .and_then(Value::as_str)
@@ -272,10 +267,9 @@ fn parse_session_file(path: &Path) -> Head {
         }
         tokens += sum_token_fields(&value);
 
-        if head.first_prompt.is_none() && !head.started_with_command {
+        if head.first_prompt.is_none() {
             match scan_claude_prompt(&value, &mut head.command_fallback) {
                 PromptScan::Prompt(prompt) => head.first_prompt = Some(prompt),
-                PromptScan::CommandWrapper => head.started_with_command = true,
                 PromptScan::Ignored => {}
             }
         }
@@ -293,9 +287,14 @@ fn fill_string_once(target: &mut Option<String>, value: &Value, key: &str) {
     }
 }
 
+fn fill_string_latest(target: &mut Option<String>, value: &Value, key: &str) {
+    if let Some(text) = value.get(key).and_then(Value::as_str) {
+        *target = Some(text.to_owned());
+    }
+}
+
 enum PromptScan {
     Prompt(String),
-    CommandWrapper,
     Ignored,
 }
 
@@ -321,7 +320,6 @@ fn scan_claude_prompt(value: &Value, command_fallback: &mut Option<String>) -> P
     let Some(parts) = claude_prompt_text_parts(content) else {
         return PromptScan::Ignored;
     };
-    let mut saw_command_wrapper = false;
     for part in parts {
         let normalized = part.replace('\n', " ");
         let trimmed = normalized.trim();
@@ -332,7 +330,6 @@ fn scan_claude_prompt(value: &Value, command_fallback: &mut Option<String>) -> P
             if command_fallback.is_none() {
                 *command_fallback = Some(name.to_owned());
             }
-            saw_command_wrapper = true;
             continue;
         }
         if let Some(command) = tag_body(trimmed, "bash-input") {
@@ -344,11 +341,7 @@ fn scan_claude_prompt(value: &Value, command_fallback: &mut Option<String>) -> P
         return PromptScan::Prompt(compact_line_ascii(trimmed, 200));
     }
 
-    if saw_command_wrapper {
-        PromptScan::CommandWrapper
-    } else {
-        PromptScan::Ignored
-    }
+    PromptScan::Ignored
 }
 
 fn claude_prompt_text_parts(content: &Value) -> Option<Vec<String>> {
@@ -432,6 +425,7 @@ fn file_modified_unix(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn hides_generated_command_threads() {
@@ -451,5 +445,50 @@ mod tests {
             "Fix CI failures on the backend job",
             false
         ));
+    }
+
+    #[test]
+    fn command_wrapper_does_not_block_later_real_prompt() {
+        let mut command_fallback = None;
+        let command = json!({
+            "type": "user",
+            "message": {
+                "content": "<command-name>/theme</command-name>\n<command-message>theme</command-message>"
+            }
+        });
+        assert!(matches!(
+            scan_claude_prompt(&command, &mut command_fallback),
+            PromptScan::Ignored
+        ));
+        assert_eq!(command_fallback.as_deref(), Some("/theme"));
+
+        let real_prompt = json!({
+            "type": "user",
+            "message": {
+                "content": "Current state: fix the Live2D UI"
+            }
+        });
+        let PromptScan::Prompt(prompt) = scan_claude_prompt(&real_prompt, &mut command_fallback)
+        else {
+            panic!("expected later real prompt");
+        };
+        assert_eq!(prompt, "Current state: fix the Live2D UI");
+        assert!(!is_hidden_thread("Live2D UI fix", &prompt, false));
+    }
+
+    #[test]
+    fn latest_claude_title_metadata_wins() {
+        let mut title = None;
+        fill_string_latest(
+            &mut title,
+            &json!({"type": "custom-title", "customTitle": "set-dark-theme"}),
+            "customTitle",
+        );
+        fill_string_latest(
+            &mut title,
+            &json!({"type": "custom-title", "customTitle": "Live2D UI fix"}),
+            "customTitle",
+        );
+        assert_eq!(title.as_deref(), Some("Live2D UI fix"));
     }
 }
