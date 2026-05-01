@@ -671,31 +671,57 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     let rows = app.rows.iter().enumerate().map(|(visible, row)| {
         let session = &app.sessions[row.index];
+        let selected = visible == app.selected;
+        let row_style = if selected {
+            selected_row_style()
+        } else {
+            Style::default()
+        };
         let key = if visible < 9 {
             (visible + 1).to_string()
         } else {
             String::new()
         };
+        let key_style = if selected {
+            row_style
+        } else {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        };
+        let provider_style = if selected {
+            row_style
+        } else {
+            session.provider.style()
+        };
+        let title =
+            highlight_title_cell(&session.title, title_query, title_width as usize, selected);
+        let location = highlight_location_cell(
+            &session.cwd_display,
+            location_query,
+            location_width as usize,
+            selected,
+        );
+        let tokens_style = if selected {
+            row_style
+        } else {
+            token_style(session.tokens)
+        };
+        let updated_style = if selected {
+            row_style
+        } else {
+            Style::default().fg(Color::Gray)
+        };
         Row::new(vec![
-            Cell::from(key).style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from(session.provider.as_str()).style(session.provider.style()),
-            Cell::from(highlight_title_cell(
-                &session.title,
-                title_query,
-                title_width as usize,
+            Cell::from(Span::styled(key, key_style)),
+            Cell::from(Span::styled(session.provider.as_str(), provider_style)),
+            Cell::from(title).style(row_style),
+            Cell::from(location).style(row_style),
+            Cell::from(Span::styled(format_tokens(session.tokens), tokens_style)),
+            Cell::from(Span::styled(
+                format_age_at(session.updated_at, now),
+                updated_style,
             )),
-            Cell::from(highlight_location_cell(
-                &session.cwd_display,
-                location_query,
-                location_width as usize,
-            )),
-            Cell::from(format_tokens(session.tokens)).style(token_style(session.tokens)),
-            Cell::from(format_age_at(session.updated_at, now))
-                .style(Style::default().fg(Color::Gray)),
         ])
     });
 
@@ -716,11 +742,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ])
         .style(label_style()),
     )
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::Rgb(36, 36, 36))
-            .add_modifier(Modifier::BOLD),
-    )
+    .row_highlight_style(selected_row_style())
     .block(Block::default().title("sessions").borders(Borders::ALL));
 
     let mut state = TableState::default();
@@ -864,6 +886,17 @@ fn label_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
 
+fn selected_row_style() -> Style {
+    Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn selected_match_style() -> Style {
+    selected_row_style().add_modifier(Modifier::UNDERLINED)
+}
+
 fn section_line(label: &'static str) -> Line<'static> {
     Line::from(Span::styled(
         label,
@@ -970,23 +1003,18 @@ fn highlight_preview_query_spans(text: &str, query: &str, base_style: Style) -> 
     )
 }
 
-fn highlight_table_query(text: &str, query: &str) -> Line<'static> {
-    highlight_query_with_style(
-        text,
-        query,
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-    )
-}
-
-fn highlight_query_with_style(text: &str, query: &str, match_style: Style) -> Line<'static> {
-    Line::from(highlight_query_spans(
-        text,
-        query,
-        Style::default(),
-        match_style,
-    ))
+fn highlight_table_query(text: &str, query: &str, selected: bool) -> Line<'static> {
+    let (base_style, match_style) = if selected {
+        (selected_row_style(), selected_match_style())
+    } else {
+        (
+            Style::default(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )
+    };
+    Line::from(highlight_query_spans(text, query, base_style, match_style))
 }
 
 fn highlight_query_spans(
@@ -1019,20 +1047,36 @@ fn highlight_query_spans(
     spans
 }
 
-fn highlight_title_cell(title: &str, query: &str, max_chars: usize) -> Line<'static> {
+fn highlight_title_cell(
+    title: &str,
+    query: &str,
+    max_chars: usize,
+    selected: bool,
+) -> Line<'static> {
     let title = ellipsize_tail(title, max_chars);
     if query.is_empty() {
+        if selected {
+            return Line::from(Span::styled(title, selected_row_style()));
+        }
         return Line::from(title);
     }
-    highlight_table_query(&title, query)
+    highlight_table_query(&title, query, selected)
 }
 
-fn highlight_location_cell(path: &str, query: &str, max_chars: usize) -> Line<'static> {
+fn highlight_location_cell(
+    path: &str,
+    query: &str,
+    max_chars: usize,
+    selected: bool,
+) -> Line<'static> {
     let path = ellipsize_path(path, max_chars);
     if query.is_empty() {
+        if selected {
+            return Line::from(Span::styled(path, selected_row_style()));
+        }
         return Line::from(Span::styled(path, Style::default().fg(Color::Gray)));
     }
-    highlight_table_query(&path, query)
+    highlight_table_query(&path, query, selected)
 }
 
 fn compact_line(text: &str, max_chars: usize) -> String {
