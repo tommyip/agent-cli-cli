@@ -2,6 +2,12 @@
 
 `acc` is an interactive session switcher for Claude Code and Codex. It finds local agent sessions across projects, Git worktrees, and Jujutsu (`jj`) workspaces, then resumes the selected session from its recorded directory.
 
+## Install
+
+```sh
+cargo install --git https://github.com/tommyip/agent-cli-cli acc
+```
+
 ## Usage
 
 ```sh
